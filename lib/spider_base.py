@@ -16,7 +16,8 @@ from selenium.webdriver.chrome.options import Options
 
 class SpiderBase:
     def __init__(self, conference:str, year:int, data_file="data.db"):
-        self.conference = conference.lower()
+        self.conference_lower = conference.lower()  # 保留小写版本供内部使用
+        self.conference = conference.upper()  # 使用大写版本保存到数据库
         self.year = int(year)
         self.data_file = data_file
         
@@ -37,9 +38,7 @@ class SpiderBase:
         # self.driver.set_page_load_timeout(80)
         # self.driver.get("https://scholar.google.com/scholar")
         
-
-        if not os.path.exists(data_file):
-            raise Exception("数据库文件不存在, 请先create_db.py")
+        
         self.conn = self._connect2db()
 
         # 仅针对当前要爬取的当年会议, 不包含其他的会议
@@ -48,6 +47,21 @@ class SpiderBase:
     def _connect2db(self):
         # 建立数据库连接
         conn = sqlite3.connect(self.data_file)
+        
+        # 检查并创建paper表（如果不存在）
+        cursor = conn.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS paper (
+            paper_name TEXT NOT NULL,
+            link TEXT,
+            abstract TEXT,
+            conference TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            PRIMARY KEY (paper_name, conference, year)
+        )
+        ''')
+        conn.commit()
+        
         return conn
         
     def get_exist_paper_from_db(self):
@@ -87,11 +101,27 @@ class SpiderBase:
                 continue
             try:
                 time.sleep(interval)
-                abstract = self.spider_single_paper_abstract(paper_query_info)
-                # 构建完整链接
-                link = self.base_url + ('/' if paper_query_info["href_url"][0] != '/' else '') + paper_query_info["href_url"]
+                # 调用子类的spider_single_paper_abstract方法获取论文信息
+                result = self.spider_single_paper_abstract(paper_query_info)
                 
-                self.insert_paper2db(paper_query_info["paper_name"], self.conference, self.year, abstract, link)
+                # 处理返回结果，支持两种格式：(title, abstract) 或 abstract
+                if isinstance(result, tuple) and len(result) >= 2:
+                    paper_name = result[0]
+                    abstract = result[1]
+                else:
+                    # 兼容旧的返回格式
+                    paper_name = paper_query_info["paper_name"]
+                    abstract = result
+                
+                # 检查href_url是否已经是完整URL，如果是则直接使用
+                if paper_query_info["href_url"].startswith('http'):
+                    link = paper_query_info["href_url"]
+                else:
+                    # 对于相对URL，构建完整链接
+                    link = self.base_url + ('/' if paper_query_info["href_url"][0] != '/' else '') + paper_query_info["href_url"]
+                
+                # 使用获取到的正确标题插入数据库
+                self.insert_paper2db(paper_name, self.conference, self.year, abstract, link)
                 error_num = 0
             except:
                 error_num += 1
@@ -127,7 +157,7 @@ class SpiderBase:
     #     self.driver.find_element(By.ID, 'gs_hdr_tsi').clear()
     #     self.driver.find_element(By.ID, 'gs_hdr_tsi').send_keys(paper_name)
     #     self.driver.find_element(By.ID, "gs_hdr_tsb").click()
-        
+    #     
     #     flag = False
     #     for _ in range(10):
     #         try:
